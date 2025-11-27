@@ -12,13 +12,7 @@ import threading
 # ------------------------------------------------------------------
 # 設定エリア
 # ------------------------------------------------------------------
-# Renderの「Environment Variables」で設定したTOKENを読み込みます
-# ローカルでテストする場合は、ここを直接 "トークン文字列" に書き換えても動きます
 TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-
-# データを保存するファイル名
-# 【重要】Renderの無料プランでは、再起動時にこのファイルはリセット(消滅)します。
-# 永続化したい場合はGoogleスプレッドシート連携やデータベースが必要です。
 DATA_FILE = "tasks.json"
 
 # ------------------------------------------------------------------
@@ -43,26 +37,22 @@ client = TaskBot()
 # ------------------------------------------------------------------
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        """アクセスが来たら 200 OK を返す"""
         self.send_response(200)
         self.send_header('Content-type', 'text/plain; charset=utf-8')
         self.end_headers()
         self.wfile.write(b"Bot is active and running!")
 
     def log_message(self, format, *args):
-        # ログ出力を抑制
         return
 
 def run_server():
-    """Webサーバーを起動する"""
-    # Renderなどのクラウド環境が指定するポートを使用。なければ8080。
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    print(f"🌍 Webサーバーがポート {port} で起動しました")
+    # flush=Trueを入れてログに即時表示されるように改良
+    print(f"🌍 Webサーバーがポート {port} で起動しました", flush=True)
     server.serve_forever()
 
 def keep_alive():
-    """別スレッドでWebサーバーを開始する"""
     t = threading.Thread(target=run_server)
     t.daemon = True
     t.start()
@@ -72,13 +62,10 @@ def keep_alive():
 # ------------------------------------------------------------------
 def parse_duration(duration_str: str):
     total_seconds = 0
-    # 日
     days = re.search(r'(\d+)\s*(?:d|day|日)', duration_str)
     if days: total_seconds += int(days.group(1)) * 86400
-    # 時間
     hours = re.search(r'(\d+)\s*(?:h|hour|時間)', duration_str)
     if hours: total_seconds += int(hours.group(1)) * 3600
-    # 分
     minutes = re.search(r'(\d+)\s*(?:m|min|分)', duration_str)
     if minutes: total_seconds += int(minutes.group(1)) * 60
 
@@ -106,23 +93,28 @@ def save_tasks(tasks_data):
     notify_before="通知タイミング (例: 1日, 3時間, 1日2時間)"
 )
 async def add_task(interaction: discord.Interaction, task_name: str, deadline: str, notify_before: str):
+    # 【修正点】処理に時間がかかってもエラーにならないよう、先に「考え中...」状態にする(defer)
+    # ephemeral=True にすると、実行した人にしか見えないメッセージになります
+    await interaction.response.defer(ephemeral=True)
+
     try:
         fmt_deadline = deadline.replace("/", "-").replace(":", ":")
         deadline_dt = datetime.datetime.strptime(fmt_deadline, "%Y-%m-%d %H:%M")
     except ValueError:
-        await interaction.response.send_message("⚠️ 日付形式エラー: `YYYY-MM-DD HH:MM` で入力してください。", ephemeral=True)
+        # deferした後は response.send_message ではなく followup.send を使う
+        await interaction.followup.send("⚠️ 日付形式エラー: `YYYY-MM-DD HH:MM` で入力してください。")
         return
 
     delta = parse_duration(notify_before)
     if delta is None:
-        await interaction.response.send_message("⚠️ 時間指定エラー: `1日` `3時間` `30分` のように入力してください。", ephemeral=True)
+        await interaction.followup.send("⚠️ 時間指定エラー: `1日` `3時間` `30分` のように入力してください。")
         return
 
     notify_dt = deadline_dt - delta
     now = datetime.datetime.now()
 
     if notify_dt < now:
-        await interaction.response.send_message("⚠️ 通知時間が過去です。", ephemeral=True)
+        await interaction.followup.send("⚠️ 通知時間が過去です。未来の時間を指定してください。")
         return
 
     new_task = {
@@ -138,22 +130,26 @@ async def add_task(interaction: discord.Interaction, task_name: str, deadline: s
     current_tasks.append(new_task)
     save_tasks(current_tasks)
 
-    await interaction.response.send_message(
+    await interaction.followup.send(
         f"✅ 登録: **{task_name}**\n締切: {deadline_dt.strftime('%m/%d %H:%M')}\n通知: {notify_dt.strftime('%m/%d %H:%M')} ({notify_before}前)"
     )
 
 @client.tree.command(name="list_tasks", description="自分の課題一覧")
 async def list_tasks(interaction: discord.Interaction):
+    # こちらも念のため defer を入れておく
+    await interaction.response.defer(ephemeral=True)
+
     tasks_data = load_tasks()
     user_tasks = [t for t in tasks_data if t["user_id"] == interaction.user.id]
     if not user_tasks:
-        await interaction.response.send_message("登録なし", ephemeral=True)
+        await interaction.followup.send("登録なし")
         return
     
     msg = "**📋 課題一覧**\n"
     for t in user_tasks:
         msg += f"・**{t['task_name']}** (締切: {t['deadline_str']})\n"
-    await interaction.response.send_message(msg, ephemeral=True)
+    
+    await interaction.followup.send(msg)
 
 # ------------------------------------------------------------------
 # 定期実行タスク
@@ -186,7 +182,7 @@ async def check_reminders():
 
 @client.event
 async def on_ready():
-    print(f'ログインしました: {client.user}')
+    print(f'ログインしました: {client.user}', flush=True)
 
 if __name__ == "__main__":
     # Webサーバー起動
